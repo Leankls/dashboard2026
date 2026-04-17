@@ -890,6 +890,21 @@ async function loadAll() {
     [DB.embarques, DB.clientes, DB.proveedores] = await Promise.all([
       getItems('embarques'), getItems('clientes'), getItems('proveedores')
     ]);
+    // Asegurar que las columnas de clientes/proveedores existan en SharePoint.
+    // Sin esto, saveDir() falla al guardar Contacto/Email/Telefono/Tipo
+    // porque las listas de SharePoint solo traen "Title" por defecto.
+    // Se ejecuta en background — no bloquea la carga inicial.
+    ensureListColumns('clientes', [
+      { name:'Contacto', text:{} },
+      { name:'Email',    text:{} },
+      { name:'Telefono', text:{} }
+    ]).catch(()=>{});
+    ensureListColumns('proveedores', [
+      { name:'Contacto', text:{} },
+      { name:'Email',    text:{} },
+      { name:'Telefono', text:{} },
+      { name:'Tipo',     text:{} }
+    ]).catch(()=>{});
   } catch(e) {
     toast('Error al cargar datos. Verifica la configuración en ⚙ Configuración.', 'danger');
     console.error(e);
@@ -988,12 +1003,16 @@ function renderDash() {
   const totPag  = embs.reduce((s,e)=>s+(+e.MontoPago1||0)+(+e.MontoPago2||0),0);
   const totCob  = embs.reduce((s,e)=>s+(+e.MontoCobroCliente||0),0);
 
-  // ── PROYECCIÓN AL 31 DIC: saldo ini + cobros futuros − pagos futuros − gastos fijos restantes ──
-  const saldoIniDash = +(localStorage.getItem('lk_saldo_inicial')||4600);
+  // ── PROYECCIÓN AL 31 DIC ──
+  // buildDailyCashflow simula desde el 1-ene del año usando lk_saldo_inicial_anio (Excel!Cashflow!B2)
+  // y aplica gastos fijos los 12 días-1 del año (idéntico a la hoja Cashflow del Excel).
+  // El saldo en el último día del rango = Excel!Cashflow!E<fila_31-dic>
+  const yearEnd = `${hoy.getFullYear()}-12-31`;
+  const saldoIniAnio = +(localStorage.getItem('lk_saldo_inicial_anio')||0);
   const { saldos: saldosDic } = buildDailyCashflow(
-    hoy.toISOString().slice(0,10), '2026-12-31', saldoIniDash
+    hoy.toISOString().slice(0,10), yearEnd
   );
-  const balance31dic = saldosDic.length ? saldosDic[saldosDic.length-1] : saldoIniDash;
+  const balance31dic = saldosDic.length ? saldosDic[saldosDic.length-1] : saldoIniAnio;
 
   // ── VENCIDOS — solo si monto > 0 (monto=0 significa ya pagado/cobrado) ──
   const pagsVenc = embs.filter(e => e.Estado !== 'Cerrado' && (
@@ -1094,10 +1113,8 @@ function renderDash() {
      <td class="small fw-semibold" style="color:#065f46">${mny(e.MontoCobroCliente)}</td></tr>`
   ).join('');
 
-  // ── Fechas por defecto para cashflow: hoy → 31 dic (igual que el Excel) ──
-  const cfDesde = localStorage.getItem('lk_cf_desde') || hoy.toISOString().slice(0,10);
-  const cfHasta = localStorage.getItem('lk_cf_hasta') || `${hoy.getFullYear()}-12-31`;
-  const saldoIni = +(localStorage.getItem('lk_saldo_inicial')||4600);
+  // El cashflow chart usa rango fijo (hoy → 31-dic del año en curso) y el saldo
+  // inicial del año proviene de Excel!Cashflow!B2 → lk_saldo_inicial_anio.
 
   document.getElementById('content').innerHTML = `
     ${configPending() ? `<div class="cfg-banner"><i class="fas fa-exclamation-triangle me-2"></i>
@@ -1221,27 +1238,18 @@ function renderDash() {
       </div>
     </div>
 
-    <!-- Cashflow diario -->
+    <!-- Cashflow diario — rango fijo: hoy → 31-dic, saldo inicial leído del Excel (Cashflow!B2) -->
     <div class="dtable">
       <div class="dtable-head d-flex align-items-center justify-content-between flex-wrap gap-2">
-        <span class="fw-semibold small"><i class="fas fa-chart-area me-1 text-primary"></i>Cashflow</span>
+        <span class="fw-semibold small"><i class="fas fa-chart-area me-1 text-primary"></i>Cashflow
+          <span class="text-muted ms-2" style="font-weight:400;font-size:.72rem">
+            Hoy → 31-dic · Saldo base: <strong>${mny(+(localStorage.getItem('lk_saldo_inicial_anio')||0))}</strong> al 1-ene (de Cashflow!B2)
+          </span>
+        </span>
         <div class="d-flex align-items-center gap-2 flex-wrap">
-          <label class="small text-muted mb-0">Desde:</label>
-          <input type="date" id="cfDesde" value="${cfDesde}" class="form-control form-control-sm" style="width:138px;font-size:.78rem"
-            onchange="localStorage.setItem('lk_cf_desde',this.value);refreshCashflow()">
-          <label class="small text-muted mb-0">Hasta:</label>
-          <input type="date" id="cfHasta" value="${cfHasta}" class="form-control form-control-sm" style="width:138px;font-size:.78rem"
-            onchange="localStorage.setItem('lk_cf_hasta',this.value);refreshCashflow()">
-          <label class="small text-muted mb-0">Saldo ini.:</label>
-          <input type="number" id="cfSaldoIni" value="${saldoIni}" step="100" class="form-control form-control-sm" style="width:100px;font-size:.78rem"
-            onchange="localStorage.setItem('lk_saldo_inicial',this.value);renderDash()">
           <label class="small text-muted mb-0">Objetivo:</label>
           <input type="number" id="cfObjetivo" value="${+(localStorage.getItem('lk_objetivo')||35000)}" step="500" class="form-control form-control-sm" style="width:100px;font-size:.78rem"
             onchange="localStorage.setItem('lk_objetivo',this.value);refreshCashflow()">
-          <button class="btn btn-sm btn-outline-secondary" style="font-size:.72rem;padding:3px 8px" title="Restablecer valores del Excel"
-            onclick="localStorage.setItem('lk_saldo_inicial','4600');localStorage.setItem('lk_objetivo','35000');localStorage.removeItem('lk_cf_desde');localStorage.removeItem('lk_cf_hasta');renderDash()">
-            ↺ Reset Excel
-          </button>
         </div>
       </div>
       <div style="padding:14px 16px 4px"><canvas id="cCashflow" height="115"></canvas></div>
@@ -1281,14 +1289,14 @@ function renderDash() {
   refreshCashflow();
 }
 
-// Construye y actualiza la gráfica diaria de cashflow — estilo Excel
+// Construye y actualiza la gráfica diaria de cashflow — estilo Excel.
+// Rango fijo: hoy → 31-dic del año en curso. El saldo base proviene de Excel!Cashflow!B2.
 function refreshCashflow() {
-  const desde = document.getElementById('cfDesde')?.value;
-  const hasta = document.getElementById('cfHasta')?.value;
-  const saldoIni = +(document.getElementById('cfSaldoIni')?.value || localStorage.getItem('lk_saldo_inicial') || 0);
-  if (!desde || !hasta) return;
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const desde = hoy.toISOString().slice(0,10);
+  const hasta = `${hoy.getFullYear()}-12-31`;
 
-  const { labels, saldos } = buildDailyCashflow(desde, hasta, saldoIni);
+  const { labels, saldos } = buildDailyCashflow(desde, hasta);
   const objetivo = +(localStorage.getItem('lk_objetivo')||35000);
 
   if (chartCashflow) { chartCashflow.destroy(); chartCashflow=null; }
@@ -1374,32 +1382,36 @@ function refreshCashflow() {
   });
 }
 
-function buildDailyCashflow(desde, hasta, saldoIni) {
+// Replica EXACTAMENTE la lógica de la hoja "Cashflow" del Excel:
+//   1) Parte del saldo al 1-ene del año (celda B2 del Excel, guardada en lk_saldo_inicial_anio)
+//   2) Recorre día a día desde el 1-ene hasta el 31-dic, sumando cobros y restando pagos
+//   3) Aplica gastos fijos los 12 días-1 del año (no solo desde el mes siguiente)
+//   4) Retorna solo los días pedidos (desde → hasta) pero calculados desde el 1-ene
+// Así, el saldo que el chart muestra en el día "hoy" = Excel!Cashflow!E<fila_hoy>
+// y el saldo en 31-dic = Excel!Cashflow!E368. Mientras el Excel mande, ambos coinciden.
+function buildDailyCashflow(desde, hasta) {
   const gfTotal = getGastosFijosTotal();
   const embs = DB.embarques;
-  const labels=[], saldos=[];
-  let acum = saldoIni;
-
-  // Los gastos fijos solo aplican desde el 1ro del MES SIGUIENTE al actual.
-  // El saldo inicial ya incluye los gastos fijos de meses pasados y del mes en curso.
-  // Esto replica exactamente la lógica de la hoja "Cashflow" del Excel.
-  const hoyRef = new Date();
-  const primerDiaMesSiguiente = new Date(hoyRef.getFullYear(), hoyRef.getMonth() + 1, 1);
+  const saldoIniAnio = +(localStorage.getItem('lk_saldo_inicial_anio')||0);
 
   const MESES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const d = new Date(desde); d.setHours(0,0,0,0);
-  const end = new Date(hasta); end.setHours(0,0,0,0);
+  const dDesde = new Date(desde); dDesde.setHours(0,0,0,0);
+  const dHasta = new Date(hasta); dHasta.setHours(0,0,0,0);
+
+  // Simulamos desde el 1-ene del año del rango solicitado (así se replica el Excel).
+  const year = dDesde.getFullYear();
+  const d   = new Date(year, 0, 1);
+  const end = new Date(dHasta.getFullYear(), 11, 31);
+
+  const labels = [], saldos = [];
+  let acum = saldoIniAnio;
 
   while (d <= end) {
     const iso = d.toISOString().slice(0,10);
-    const dd  = String(d.getDate()).padStart(2,'0');
-    const mo  = MESES[d.getMonth()];
-    const yy  = d.getFullYear();
-    labels.push(`${dd}-${mo}-${yy}`);
-
     let cobros = 0, pagos = 0;
-    // Gastos fijos: solo día 1 de mes, a partir del mes siguiente al actual
-    if (d.getDate() === 1 && d >= primerDiaMesSiguiente) pagos += gfTotal;
+
+    // Gastos fijos: día 1 de CADA mes (todos los 12 — igual que el Excel)
+    if (d.getDate() === 1) pagos += gfTotal;
 
     embs.forEach(e => {
       // .slice(0,10) normaliza fechas de SharePoint "2026-04-20T00:00:00Z" → "2026-04-20"
@@ -1412,7 +1424,16 @@ function buildDailyCashflow(desde, hasta, saldoIni) {
     });
 
     acum += cobros - pagos;
-    saldos.push(Math.round(acum));
+
+    // Solo agregamos al output los días en el rango desde→hasta
+    if (d >= dDesde && d <= dHasta) {
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mo = MESES[d.getMonth()];
+      const yy = d.getFullYear();
+      labels.push(`${dd}-${mo}-${yy}`);
+      saldos.push(Math.round(acum));
+    }
+
     d.setDate(d.getDate()+1);
   }
   return { labels, saldos };
@@ -1679,13 +1700,39 @@ async function saveDir() {
   const fields = { Title:g('dNombre'), Contacto:g('dContacto'), Email:g('dEmail'), Telefono:g('dTel') };
   if (!isCli) fields.Tipo = g('dTipo');
   if (!fields.Title) return toast('El nombre es obligatorio','warning');
-  try {
-    if (editDirId) await updateItem(dirType, editDirId, fields);
-    else           await createItem(dirType, fields);
-    bootstrap.Modal.getInstance(document.getElementById('mDir')).hide();
-    toast('Guardado correctamente','success');
-    go(dirType);
-  } catch(e) { toast('Error: '+e.message,'danger'); }
+
+  // Asegurar columnas en SharePoint antes de guardar (idempotente — ignora si ya existen).
+  // Esto evita el error "Field 'Contacto' is not recognized" cuando la lista
+  // de SharePoint se creó solo con la columna Title.
+  const cols = [
+    { name:'Contacto', text:{} },
+    { name:'Email',    text:{} },
+    { name:'Telefono', text:{} }
+  ];
+  if (!isCli) cols.push({ name:'Tipo', text:{} });
+  try { await ensureListColumns(dirType, cols); } catch(_){}
+
+  // Upsert robusto: si SharePoint sigue rechazando algún campo, lo eliminamos y reintentamos.
+  let payload = {...fields};
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      if (editDirId) await updateItem(dirType, editDirId, payload);
+      else           await createItem(dirType, payload);
+      bootstrap.Modal.getInstance(document.getElementById('mDir')).hide();
+      toast('Guardado correctamente','success');
+      go(dirType);
+      return;
+    } catch(e) {
+      const m = e.message.match(/Field '([^']+)' is not recognized/);
+      if (m && m[1] !== 'Title') {
+        delete payload[m[1]];
+        console.warn(`saveDir: SharePoint rechazó '${m[1]}', reintentando sin ese campo`);
+        continue;
+      }
+      toast('Error: '+e.message,'danger');
+      return;
+    }
+  }
 }
 
 async function delItem(list, id, page) {
@@ -2087,6 +2134,20 @@ async function importarExcel(input) {
         DB.gastosf = gfItems;
         localStorage.setItem('lk_gastosf', JSON.stringify(gfItems));
       }
+    }
+
+    // ── Leer hoja Cashflow → celda B2 (saldo inicial del año, editable por el usuario) ──
+    // El Excel manda: cada vez que importas, el saldo base del cashflow del dashboard
+    // se sincroniza con lo que tengas en Cashflow!B2.
+    setImportProgress(97, 'Leyendo saldo inicial del año (Cashflow!B2)…');
+    const wsCF = wb.Sheets['Cashflow'];
+    if (wsCF && wsCF['B2']) {
+      const b2 = wsCF['B2'].v;
+      const saldoIniAnio = (typeof b2 === 'number') ? b2 : parseFloat(String(b2).replace(/[^\d.-]/g,'')) || 0;
+      localStorage.setItem('lk_saldo_inicial_anio', String(saldoIniAnio));
+      console.log(`[ERP Import] Saldo inicial del año (Cashflow!B2): ${saldoIniAnio} €`);
+    } else {
+      console.warn('[ERP Import] No se encontró la hoja "Cashflow" o la celda B2 está vacía');
     }
 
     setImportProgress(100, '✓ Sincronización completada',
