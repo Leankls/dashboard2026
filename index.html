@@ -1238,12 +1238,20 @@ function renderDash() {
       </div>
     </div>
 
-    <!-- Cashflow diario — rango fijo: hoy → 31-dic, saldo inicial leído del Excel (Cashflow!B2) -->
+    <!-- Cashflow diario — rango fijo: hoy → 31-dic, valores tomados directamente del Excel (Cashflow!E) -->
     <div class="dtable">
       <div class="dtable-head d-flex align-items-center justify-content-between flex-wrap gap-2">
         <span class="fw-semibold small"><i class="fas fa-chart-area me-1 text-primary"></i>Cashflow
           <span class="text-muted ms-2" style="font-weight:400;font-size:.72rem">
-            Hoy → 31-dic · Saldo base: <strong>${mny(+(localStorage.getItem('lk_saldo_inicial_anio')||0))}</strong> al 1-ene (de Cashflow!B2)
+            Hoy → 31-dic · ${(()=>{
+              const daily = JSON.parse(localStorage.getItem('lk_cashflow_daily')||'[]');
+              if (!daily.length) return '<span style="color:#d97706"><i class="fas fa-exclamation-triangle me-1"></i>Importa el Excel para ver datos</span>';
+              const isoHoy = new Date().toISOString().slice(0,10);
+              const isoFin = `${new Date().getFullYear()}-12-31`;
+              const sHoy = daily.find(r=>r.d===isoHoy)?.s;
+              const sFin = daily.find(r=>r.d===isoFin)?.s;
+              return `Hoy: <strong>${sHoy!=null?mny(sHoy):'—'}</strong> · 31-dic: <strong>${sFin!=null?mny(sFin):'—'}</strong> (de Cashflow!E)`;
+            })()}
           </span>
         </span>
         <div class="d-flex align-items-center gap-2 flex-wrap">
@@ -1382,57 +1390,44 @@ function refreshCashflow() {
   });
 }
 
-// Replica EXACTAMENTE la lógica de la hoja "Cashflow" del Excel:
-//   1) Parte del saldo al 1-ene del año (celda B2 del Excel, guardada en lk_saldo_inicial_anio)
-//   2) Recorre día a día desde el 1-ene hasta el 31-dic, sumando cobros y restando pagos
-//   3) Aplica gastos fijos los 12 días-1 del año (no solo desde el mes siguiente)
-//   4) Retorna solo los días pedidos (desde → hasta) pero calculados desde el 1-ene
-// Así, el saldo que el chart muestra en el día "hoy" = Excel!Cashflow!E<fila_hoy>
-// y el saldo en 31-dic = Excel!Cashflow!E368. Mientras el Excel mande, ambos coinciden.
+// El Excel manda al 100 %. Esta función NO recalcula nada — simplemente reproduce
+// la columna E (saldo acumulado) de la hoja Cashflow del Excel, que se guardó en
+// localStorage.lk_cashflow_daily durante el último Importar Excel.
+// Resultado: dashboard ≡ Excel, día por día.
 function buildDailyCashflow(desde, hasta) {
-  const gfTotal = getGastosFijosTotal();
-  const embs = DB.embarques;
-  const saldoIniAnio = +(localStorage.getItem('lk_saldo_inicial_anio')||0);
-
   const MESES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const dDesde = new Date(desde); dDesde.setHours(0,0,0,0);
-  const dHasta = new Date(hasta); dHasta.setHours(0,0,0,0);
-
-  // Simulamos desde el 1-ene del año del rango solicitado (así se replica el Excel).
-  const year = dDesde.getFullYear();
-  const d   = new Date(year, 0, 1);
-  const end = new Date(dHasta.getFullYear(), 11, 31);
-
   const labels = [], saldos = [];
-  let acum = saldoIniAnio;
+
+  // Leer el cashflow diario almacenado del último import
+  let daily = [];
+  try { daily = JSON.parse(localStorage.getItem('lk_cashflow_daily') || '[]'); }
+  catch(_) { daily = []; }
+
+  if (!daily.length) {
+    // Sin datos importados todavía — el chart se verá vacío, esperado en el primer uso
+    return { labels, saldos };
+  }
+
+  // Indexar por fecha ISO para lookup O(1)
+  const byDate = Object.create(null);
+  for (const r of daily) byDate[r.d] = r.s;
+
+  // Recorrer el rango pedido y plotear cada día con el valor del Excel
+  const d   = new Date(desde); d.setHours(0,0,0,0);
+  const end = new Date(hasta); end.setHours(0,0,0,0);
+  let lastSaldo = 0;
 
   while (d <= end) {
     const iso = d.toISOString().slice(0,10);
-    let cobros = 0, pagos = 0;
+    const dd = String(d.getDate()).padStart(2,'0');
+    const mo = MESES[d.getMonth()];
+    const yy = d.getFullYear();
+    labels.push(`${dd}-${mo}-${yy}`);
 
-    // Gastos fijos: día 1 de CADA mes (todos los 12 — igual que el Excel)
-    if (d.getDate() === 1) pagos += gfTotal;
-
-    embs.forEach(e => {
-      // .slice(0,10) normaliza fechas de SharePoint "2026-04-20T00:00:00Z" → "2026-04-20"
-      const fck = (e.FechaCobroCliente||'').slice(0,10);
-      const fp1 = (e.FechaPago1||'').slice(0,10);
-      const fp2 = (e.FechaPago2||'').slice(0,10);
-      if (fck === iso && (+e.MontoCobroCliente||0) > 0) cobros += +e.MontoCobroCliente;
-      if (fp1 === iso && (+e.MontoPago1||0)        > 0) pagos  += +e.MontoPago1;
-      if (fp2 === iso && (+e.MontoPago2||0)        > 0) pagos  += +e.MontoPago2;
-    });
-
-    acum += cobros - pagos;
-
-    // Solo agregamos al output los días en el rango desde→hasta
-    if (d >= dDesde && d <= dHasta) {
-      const dd = String(d.getDate()).padStart(2,'0');
-      const mo = MESES[d.getMonth()];
-      const yy = d.getFullYear();
-      labels.push(`${dd}-${mo}-${yy}`);
-      saldos.push(Math.round(acum));
-    }
+    // Si el Excel tiene valor para esta fecha, úsalo. Si no (raro), arrastra el último.
+    const s = (iso in byDate) ? byDate[iso] : lastSaldo;
+    saldos.push(s);
+    lastSaldo = s;
 
     d.setDate(d.getDate()+1);
   }
@@ -2136,58 +2131,51 @@ async function importarExcel(input) {
       }
     }
 
-    // ── Leer hoja Cashflow → celda B2 (saldo inicial del año, editable por el usuario) ──
-    // El Excel manda: cada vez que importas, el saldo base del cashflow del dashboard
-    // se sincroniza con lo que tengas en Cashflow!B2.
-    setImportProgress(97, 'Leyendo saldo inicial del año (Cashflow!B2)…');
+    // ── Leer hoja Cashflow → el Excel manda al 100 % ──
+    // Leemos las columnas A (fecha) y E (saldo acumulado) de las filas 4-368
+    // y guardamos un mapa día→saldo. El chart reproduce estos valores EXACTOS
+    // en lugar de recalcular desde embarques. Así, dashboard ≡ Excel siempre.
+    setImportProgress(97, 'Leyendo cashflow diario (columnas A y E)…');
     const wsCF = wb.Sheets['Cashflow'];
-    if (wsCF && wsCF['B2']) {
-      const b2 = wsCF['B2'].v;
-      const saldoIniAnio = (typeof b2 === 'number') ? b2 : parseFloat(String(b2).replace(/[^\d.-]/g,'')) || 0;
-      localStorage.setItem('lk_saldo_inicial_anio', String(saldoIniAnio));
-      console.log(`[ERP Import] Saldo inicial del año (Cashflow!B2): ${saldoIniAnio} €`);
+    if (wsCF) {
+      // B2 → saldo inicial del año (informativo, se muestra en el header del chart)
+      if (wsCF['B2']) {
+        const b2 = wsCF['B2'].v;
+        const saldoIniAnio = (typeof b2 === 'number') ? b2 : parseFloat(String(b2).replace(/[^\d.-]/g,'')) || 0;
+        localStorage.setItem('lk_saldo_inicial_anio', String(saldoIniAnio));
+        console.log(`[ERP Import] Saldo inicial del año (Cashflow!B2): ${saldoIniAnio} €`);
+      }
+
+      // Columna E (saldo acumulado) fila por fila desde la 4 (1-ene) hasta donde haya datos
+      const daily = [];
+      for (let r = 4; r <= 400; r++) {
+        const aCell = wsCF[`A${r}`];
+        const eCell = wsCF[`E${r}`];
+        if (!aCell || aCell.v == null) break;  // fin de la tabla
+
+        // Fecha: XLSX.js con cellDates:true da un Date; si viene como string lo parseamos
+        let d;
+        if (aCell.v instanceof Date) d = aCell.v;
+        else if (typeof aCell.v === 'number') d = XLSX.SSF.parse_date_code(aCell.v) && new Date(Date.UTC(XLSX.SSF.parse_date_code(aCell.v).y, XLSX.SSF.parse_date_code(aCell.v).m-1, XLSX.SSF.parse_date_code(aCell.v).d));
+        else d = new Date(aCell.v);
+        if (!d || isNaN(d.getTime())) continue;
+        const iso = d.toISOString().slice(0,10);
+
+        // Saldo: E puede ser número o fórmula con valor cacheado en .v
+        const s = (eCell && eCell.v != null) ? Number(eCell.v) : null;
+        if (s == null || isNaN(s)) continue;
+
+        daily.push({ d: iso, s: Math.round(s) });
+      }
+
+      if (daily.length) {
+        localStorage.setItem('lk_cashflow_daily', JSON.stringify(daily));
+        console.log(`[ERP Import] Cashflow diario: ${daily.length} días leídos de columna E. Primero=${daily[0].d}:${daily[0].s}€, Último=${daily[daily.length-1].d}:${daily[daily.length-1].s}€`);
+      } else {
+        console.warn('[ERP Import] No se pudo leer la columna E del Cashflow — posiblemente el Excel no tiene fórmulas calculadas. Abre el Excel, guárdalo, y vuelve a importar.');
+      }
     } else {
-      console.warn('[ERP Import] No se encontró la hoja "Cashflow" o la celda B2 está vacía');
+      console.warn('[ERP Import] No se encontró la hoja "Cashflow" en el Excel');
     }
 
-    setImportProgress(100, '✓ Sincronización completada',
-      `${embarquesXL.length} embarques · ${cliSet.size} clientes · ${provSet.size} proveedores`);
-    document.getElementById('importFooter').style.display = 'flex';
-    toast(`${embarquesXL.length} embarques sincronizados correctamente`, 'success');
-    // Recargar datos en memoria para reflejar cambios inmediatamente
-    await loadAll();
-
-  } catch(e) {
-    setImportProgress(0, '✗ Error durante la importación', e.message);
-    document.getElementById('importFooter').style.display = 'flex';
-    toast('Error: ' + e.message, 'danger');
-  }
-
-  input.value = '';
-}
-
-// ═══════════════ INIT ═══════════════
-function tryInitMsal(attempts) {
-  if (typeof msal !== 'undefined') {
-    initMsal();
-  } else if (attempts > 0) {
-    setTimeout(() => tryInitMsal(attempts - 1), 300);
-  } else {
-    console.error('MSAL library failed to load from CDN');
-    // Show demo mode option if MSAL never loads
-    const btn = document.getElementById('btn-signin');
-    if (btn) {
-      btn.insertAdjacentHTML('afterend',
-        '<p style="color:#ef4444;font-size:.8rem;margin-top:8px">⚠ No se pudo cargar la librería de Microsoft. Verifica tu conexión o usa el modo demo.</p>');
-    }
-  }
-}
-// Wait for window load to ensure all CDN scripts are fully loaded
-if (document.readyState === 'complete') {
-  tryInitMsal(20);
-} else {
-  window.addEventListener('load', () => tryInitMsal(20));
-}
-</script>
-</body>
-</html>
+    setImportProgress(100, '✓ Si
