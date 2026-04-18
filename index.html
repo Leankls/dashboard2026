@@ -726,25 +726,18 @@ async function signIn() {
   }
   const scopes = ['Sites.FullControl.All','User.Read'];
   try {
-    if (isMobile()) {
-      // En móvil: redirect (los popups están bloqueados en Safari/iOS)
-      await msalApp.loginRedirect({ scopes });
-      // La página se recarga sola; handleRedirectPromise() en initMsal lo retoma
-    } else {
-      const r = await msalApp.loginPopup({ scopes });
-      curUser = r.account; boot();
-    }
+    // Siempre redirect (escritorio y móvil). Los popups los bloquean Safari, iOS
+    // y muchas extensiones en Chrome/Edge, lo que produce un "clic y no pasa nada".
+    // Con redirect la página navega a login.microsoftonline.com y vuelve;
+    // handleRedirectPromise() dentro de initMsal() retoma la sesión y llama a boot().
+    await msalApp.loginRedirect({ scopes });
   } catch(e) { toast('Error al iniciar sesión: '+e.message,'danger'); }
 }
 
 async function signOut() {
   if (isDemo) { location.reload(); return; }
-  if (isMobile()) {
-    await msalApp.logoutRedirect();
-  } else {
-    await msalApp.logoutPopup();
-    location.reload();
-  }
+  // Siempre redirect para ser consistente con loginRedirect
+  await msalApp.logoutRedirect();
 }
 
 async function getToken() {
@@ -755,14 +748,9 @@ async function getToken() {
     const r = await msalApp.acquireTokenSilent({ scopes, account:accs[0] });
     return r.accessToken;
   } catch {
-    if (isMobile()) {
-      // En móvil usamos redirect; la página se recargará y el token estará disponible
-      await msalApp.acquireTokenRedirect({ scopes, account:accs[0] });
-      return null; // nunca se ejecuta (redirect navega la página)
-    } else {
-      const r = await msalApp.acquireTokenPopup({ scopes });
-      return r.accessToken;
-    }
+    // Si el token silencioso falla, redirect (coherente con el login)
+    await msalApp.acquireTokenRedirect({ scopes, account:accs[0] });
+    return null; // la página navega; no se ejecuta más
   }
 }
 
@@ -2178,4 +2166,44 @@ async function importarExcel(input) {
       console.warn('[ERP Import] No se encontró la hoja "Cashflow" en el Excel');
     }
 
-    setImportProgress(100, '✓ Si
+    setImportProgress(100, '✓ Sincronización completada',
+      `${embarquesXL.length} embarques · ${cliSet.size} clientes · ${provSet.size} proveedores`);
+    document.getElementById('importFooter').style.display = 'flex';
+    toast(`${embarquesXL.length} embarques sincronizados correctamente`, 'success');
+    // Recargar datos en memoria para reflejar cambios inmediatamente
+    await loadAll();
+
+  } catch(e) {
+    setImportProgress(0, '✗ Error durante la importación', e.message);
+    document.getElementById('importFooter').style.display = 'flex';
+    toast('Error: ' + e.message, 'danger');
+  }
+
+  input.value = '';
+}
+
+// ═══════════════ INIT ═══════════════
+function tryInitMsal(attempts) {
+  if (typeof msal !== 'undefined') {
+    initMsal();
+  } else if (attempts > 0) {
+    setTimeout(() => tryInitMsal(attempts - 1), 300);
+  } else {
+    console.error('MSAL library failed to load from CDN');
+    // Show demo mode option if MSAL never loads
+    const btn = document.getElementById('btn-signin');
+    if (btn) {
+      btn.insertAdjacentHTML('afterend',
+        '<p style="color:#ef4444;font-size:.8rem;margin-top:8px">⚠ No se pudo cargar la librería de Microsoft. Verifica tu conexión o usa el modo demo.</p>');
+    }
+  }
+}
+// Wait for window load to ensure all CDN scripts are fully loaded
+if (document.readyState === 'complete') {
+  tryInitMsal(20);
+} else {
+  window.addEventListener('load', () => tryInitMsal(20));
+}
+</script>
+</body>
+</html>
