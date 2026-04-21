@@ -545,6 +545,10 @@ body { margin:0; font-family:'Segoe UI',system-ui,sans-serif; background:#f3f4f6
             <input type="date" class="form-control form-control-sm" id="eETA">
           </div>
           <div class="col-md-6">
+            <label class="form-label fw-semibold small">MBL (Master Bill of Lading)</label>
+            <input class="form-control form-control-sm" id="eMBL" placeholder="Ej: HLCU1234567">
+          </div>
+          <div class="col-md-6">
             <label class="form-label fw-semibold small">Puerto de Origen (POL)</label>
             <input class="form-control form-control-sm" id="ePOL" placeholder="Ej: QINGDAO">
           </div>
@@ -902,16 +906,16 @@ async function loadAll() {
 // ═══════════════ DEMO DATA ═══════════════
 const DEMO_DATA = {
   embarques: [
-    { id:'1', Title:'LK-2025-001', RefCliente:'CLI-0041', Cliente:'Aceros del Norte', ETD:'2025-03-10', ETA:'2025-04-05',
+    { id:'1', Title:'LK-2025-001', RefCliente:'CLI-0041', Cliente:'Aceros del Norte', MBL:'MSCU1234567', ETD:'2025-03-10', ETA:'2025-04-05',
       Proveedor1:'Naviera MSC', Proveedor2:'Agencia Aduanal Garza', FechaPago1:'2025-04-02', FechaPago2:'2025-04-08',
       FechaCobroCliente:'2025-04-15', MontoPago1:4200, MontoPago2:1800, MontoCobroCliente:9500, Estado:'En tránsito' },
-    { id:'2', Title:'LK-2025-002', RefCliente:'CLI-0042', Cliente:'Textiles Monterrey', ETD:'2025-03-18', ETA:'2025-04-20',
+    { id:'2', Title:'LK-2025-002', RefCliente:'CLI-0042', Cliente:'Textiles Monterrey', MBL:'CMAU9876543', ETD:'2025-03-18', ETA:'2025-04-20',
       Proveedor1:'Naviera CMA', Proveedor2:'', FechaPago1:'2025-04-18', FechaPago2:null,
       FechaCobroCliente:'2025-04-28', MontoPago1:3100, MontoPago2:null, MontoCobroCliente:6800, Estado:'Activo' },
-    { id:'3', Title:'LK-2025-003', RefCliente:'CLI-0039', Cliente:'Plásticos del Bajío', ETD:'2025-02-20', ETA:'2025-03-18',
+    { id:'3', Title:'LK-2025-003', RefCliente:'CLI-0039', Cliente:'Plásticos del Bajío', MBL:'EGLV5555111', ETD:'2025-02-20', ETA:'2025-03-18',
       Proveedor1:'Naviera Evergreen', Proveedor2:'Trans Rápido SA', FechaPago1:'2025-03-15', FechaPago2:'2025-03-20',
       FechaCobroCliente:'2025-03-30', MontoPago1:5500, MontoPago2:900, MontoCobroCliente:11200, Estado:'Cerrado' },
-    { id:'4', Title:'LK-2025-004', RefCliente:'CLI-0043', Cliente:'Aceros del Norte', ETD:'2025-04-01', ETA:'2025-05-10',
+    { id:'4', Title:'LK-2025-004', RefCliente:'CLI-0043', Cliente:'Aceros del Norte', MBL:null, ETD:'2025-04-01', ETA:'2025-05-10',
       Proveedor1:'Naviera MSC', Proveedor2:null, FechaPago1:'2025-05-08', FechaPago2:null,
       FechaCobroCliente:'2025-05-20', MontoPago1:7200, MontoPago2:null, MontoCobroCliente:14000, Estado:'Activo' },
   ],
@@ -1462,6 +1466,7 @@ function paintEmb(list) {
       <td>${e.Cliente||'—'}</td>
       <td>${fd(e.ETD)}</td>
       <td>${fd(e.ETA)}</td>
+      <td class="small font-monospace">${e.MBL||'—'}</td>
       <td>${e.POL||'—'}<i class="fas fa-arrow-right mx-1 text-muted" style="font-size:.65rem"></i>${e.POD||'—'}</td>
       <td>${e.Proveedor1||'—'}<br><small class="text-muted">${e.Proveedor2||''}</small></td>
       <td>${fd(e.FechaPago1)}${e.MontoPago1?'<br><small class="text-danger fw-semibold">'+mny(e.MontoPago1)+'</small>':''}</td>
@@ -1473,14 +1478,14 @@ function paintEmb(list) {
         <button class="btn-icon del ms-1" onclick="delItem('embarques','${e.id}','embarques')"><i class="fas fa-trash"></i></button>` : ''}
       </td>
     </tr>`).join('') :
-    `<tr><td colspan="11"><div class="empty"><i class="fas fa-ship d-block"></i>Sin embarques registrados</div></td></tr>`;
+    `<tr><td colspan="12"><div class="empty"><i class="fas fa-ship d-block"></i>Sin embarques registrados</div></td></tr>`;
 
   document.getElementById('content').innerHTML = `
     <div class="dtable" style="overflow-x:auto">
       <table>
         <thead><tr>
           <th>Ref LK</th><th>Ref Cliente</th><th>Cliente</th>
-          <th>ETD</th><th>ETA</th><th>POL → POD</th><th>Proveedor 1 / 2</th>
+          <th>ETD</th><th>ETA</th><th>MBL</th><th>POL → POD</th><th>Proveedor 1 / 2</th>
           <th>Pago 1</th><th>Pago 2</th><th>Cobro</th>
           <th>Estado</th><th></th>
         </tr></thead>
@@ -1515,6 +1520,7 @@ function openEditEmb(id) {
   f('eRefLK',e.Title); f('eRefCL',e.RefCliente); f('eCliente',e.Cliente);
   f('eEstado',e.Estado||'Activo');
   f('eETD',iso(e.ETD)); f('eETA',iso(e.ETA));
+  f('eMBL',e.MBL||'');
   f('ePOL',e.POL||''); f('ePOD',e.POD||'');
   f('eProv1',e.Proveedor1); f('eProv2',e.Proveedor2);
   f('eFP1',iso(e.FechaPago1)); f('eFP2',iso(e.FechaPago2));
@@ -1535,6 +1541,7 @@ async function saveEmbarque() {
   const fields = {
     Title:g('eRefLK'), RefCliente:g('eRefCL'), Cliente:g('eCliente'), Estado:g('eEstado'),
     ETD:g('eETD')||null, ETA:g('eETA')||null,
+    MBL:g('eMBL')||null,
     POL:g('ePOL')||null, POD:g('ePOD')||null,
     Proveedor1:g('eProv1'), Proveedor2:g('eProv2'),
     FechaPago1:g('eFP1')||null, FechaPago2:g('eFP2')||null, FechaCobroCliente:g('eFCL')||null,
