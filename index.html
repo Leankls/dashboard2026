@@ -1866,7 +1866,7 @@ function renderConfig() {
           <div class="dtable-head"><span class="fw-semibold small">Columnas requeridas en SharePoint</span></div>
           <div class="p-4 small text-muted">
             <div class="fw-bold text-dark mb-1">Lista: Embarques</div>
-            <code class="d-block mb-2" style="font-size:.75rem">Title · RefCliente · Cliente · Estado · ETD · ETA · POL · POD · Proveedor1 · Proveedor2 · FechaPago1 · FechaPago2 · FechaCobroCliente · MontoPago1 · MontoPago2 · MontoCobroCliente</code>
+            <code class="d-block mb-2" style="font-size:.75rem">Title · RefCliente · Cliente · MBL · Estado · ETD · ETA · POL · POD · Proveedor1 · Proveedor2 · FechaPago1 · FechaPago2 · FechaCobroCliente · MontoPago1 · MontoPago2 · MontoCobroCliente</code>
             <div class="fw-bold text-dark mb-1">Lista: Clientes</div>
             <code class="d-block mb-2" style="font-size:.75rem">Title · Contacto · Email · Telefono</code>
             <div class="fw-bold text-dark mb-1">Lista: Proveedores</div>
@@ -1999,48 +1999,86 @@ async function importarExcel(input) {
 
     setImportProgress(15, `Procesados ${dataRows.length} embarques del Excel…`);
 
-    // Construir objetos embarque — columnas AF(31)-AN(39)
+    // ── Lectura por NOMBRE de cabecera (no por índice) ─────────────────────
+    // La fila 2 del "Master file" contiene las cabeceras reales. Construimos
+    // un mapa nombre→índice y buscamos cada campo por nombre. Así, si mueves,
+    // reordenas o insertas columnas (MBL, Booking, etc.) el importador NO se
+    // rompe. Regla: primera coincidencia gana (p.ej. "Cliente" aparece en B y
+    // en AH; nos quedamos con B, que es la real).
+    const headerRow = rows[1] || [];
+    const hmap = {};
+    headerRow.forEach((h, i) => {
+      if (h == null) return;
+      const key = String(h).trim().toLowerCase();
+      if (key && !(key in hmap)) hmap[key] = i;
+    });
+    const H = (name) => hmap[String(name).toLowerCase()];
+
+    // Aviso si falta una cabecera crítica (ayuda a diagnosticar)
+    const REQUIRED = ['id','cliente','etd','eta','pol','pod',
+                      'proveedor origen','proveedor destino',
+                      'fecha pago proveedor origen','fecha pago proveedor destino','fecha de pago cliente',
+                      'monto pago proveedor origen','monto pago proveedor destino','monto de pago cliente'];
+    const missing = REQUIRED.filter(n => H(n) == null);
+    if (missing.length) {
+      console.warn('[ERP Import] Faltan cabeceras en la fila 2 del Master file:', missing);
+    }
+    console.log('[ERP Import] Mapa de cabeceras detectado:', hmap);
+
     const embarquesXL = dataRows
-      .filter(r => r[0] && String(r[0]).trim() !== '')  // solo filas con ID
+      .filter(r => {
+        const idIdx = H('id');
+        return idIdx != null && r[idIdx] && String(r[idIdx]).trim() !== '';
+      })
       .map(r => {
-        const cel = (i) => {
+        const cel = (name) => {
+          const i = H(name);
+          if (i == null) return null;
           const v = r[i];
           if (v == null) return null;
           const s = String(v).trim();
           return s || null;
         };
-        const fec = (i) => excelDateToISO(r[i]);
+        const fec = (name) => {
+          const i = H(name);
+          if (i == null) return null;
+          return excelDateToISO(r[i]);
+        };
+        const num = (name) => {
+          const i = H(name);
+          if (i == null) return 0;
+          return parseEUR(r[i]) ?? 0;
+        };
         return {
-          Title:             cel(0),        // A  - ID embarque
-          RefCliente:        cel(2),        // C  - Ref. cliente
-          Cliente:           cel(1),        // B  - Nombre cliente
-          ETD:               fec(3),        // D
-          ETA:               fec(4),        // E
-          POL:               cel(5),        // F  - Puerto de Origen
-          POD:               cel(6),        // G  - Puerto de Destino
-          Proveedor1:        cel(31),       // AF - Proveedor origen
-          Proveedor2:        cel(32),       // AG - Proveedor destino
-          // AI=34, AJ=35, AK=36 — fechas de pago
-          FechaPago1:        fec(34),       // AI
-          FechaPago2:        fec(35),       // AJ
-          FechaCobroCliente: fec(36),       // AK
-          // AL=37, AM=38, AN=39 — montos en EUR (formato " 3,332.00 € " o " -   € ")
-          // IMPORTANTE: usar 0 cuando es null para sobreescribir datos viejos en SharePoint
-          MontoPago1:        parseEUR(r[37]) ?? 0,  // AL
-          MontoPago2:        parseEUR(r[38]) ?? 0,  // AM
-          MontoCobroCliente: parseEUR(r[39]) ?? 0,  // AN
+          Title:             cel('id'),
+          Cliente:           cel('cliente'),                  // primera coincidencia = columna B
+          RefCliente:        cel('referencia cliente'),
+          MBL:               cel('mbl'),                      // opcional: null si la columna no existe
+          ETD:               fec('etd'),
+          ETA:               fec('eta'),
+          POL:               cel('pol'),
+          POD:               cel('pod'),
+          Proveedor1:        cel('proveedor origen'),         // columna del resumen (no la de P)
+          Proveedor2:        cel('proveedor destino'),
+          FechaPago1:        fec('fecha pago proveedor origen'),
+          FechaPago2:        fec('fecha pago proveedor destino'),
+          FechaCobroCliente: fec('fecha de pago cliente'),
+          MontoPago1:        num('monto pago proveedor origen'),
+          MontoPago2:        num('monto pago proveedor destino'),
+          MontoCobroCliente: num('monto de pago cliente'),
           Estado:            'Activo'
         };
       })
-      // Descartar filas sin ID
       .filter(e => e.Title);
 
-    // Debug: muestra primeros 3 embarques con sus montos AI-AN en consola
-    console.log('[ERP Import] Primeros embarques leídos (AI-AN):',
+    // Debug: muestra los primeros 3 embarques leídos para verificar
+    console.log('[ERP Import] Primeros embarques leídos (por cabecera):',
       embarquesXL.slice(0,3).map(e=>({
-        id: e.Title,
-        AI: e.FechaPago1, AJ: e.FechaPago2, AK: e.FechaCobroCliente,
-        AL: e.MontoPago1, AM: e.MontoPago2, AN: e.MontoCobroCliente
+        id: e.Title, Cliente: e.Cliente, MBL: e.MBL,
+        ETD: e.ETD, ETA: e.ETA,
+        Prov1: e.Proveedor1, Prov2: e.Proveedor2,
+        FP1: e.FechaPago1, FP2: e.FechaPago2, FCli: e.FechaCobroCliente,
+        MP1: e.MontoPago1, MP2: e.MontoPago2, MCli: e.MontoCobroCliente
       }))
     );
 
@@ -2054,6 +2092,7 @@ async function importarExcel(input) {
     // Asegurar que las columnas nuevas existen en SharePoint (crea si no existen, ignora si ya existen)
     setImportProgress(22, 'Verificando columnas en SharePoint…');
     await ensureListColumns('embarques', [
+      { name:'MBL', text:{} },
       { name:'POL', text:{} },
       { name:'POD', text:{} }
     ]);
