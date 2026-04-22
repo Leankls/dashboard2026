@@ -124,6 +124,11 @@ body { margin:0; font-family:'Segoe UI',system-ui,sans-serif; background:#f3f4f6
 .cal-imp.p { color:var(--red); }
 .cal-imp.c { color:var(--green); }
 .cal-vencido { opacity:.5; }
+.cal-pagado { opacity:.55; background:#fafbfc; }
+.cal-pagado .cal-emp, .cal-pagado .cal-imp { text-decoration:line-through; text-decoration-thickness:1px; text-decoration-color:#9ca3af; }
+.cal-badge-pagado { display:inline-block; background:#dcfce7; color:#15803d; font-size:.65rem; font-weight:700; padding:2px 8px; border-radius:10px; margin-left:8px; letter-spacing:.3px; vertical-align:middle; }
+.cal-toggle { display:inline-flex; align-items:center; gap:6px; font-size:.75rem; color:#4b5563; cursor:pointer; user-select:none; }
+.cal-toggle input { cursor:pointer; accent-color:var(--blue, #3b82f6); }
 
 /* ── LOADING ── */
 .loading { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px; gap:12px; color:#9ca3af; }
@@ -957,12 +962,17 @@ function syncMobNav(page) {
   });
 }
 
+// Rastreamos la página activa para poder re-renderizarla tras una importación
+// u otra acción que modifique DB sin cambiar de vista.
+let currentPage = 'dashboard';
+
 async function go(page) {
   // Control de acceso: dashboard y calendario solo para admins
   if (!isAdmin() && (page === 'dashboard' || page === 'calendario')) {
     page = 'embarques';
   }
 
+  currentPage = page;
   closeMobSidebar();
 
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -976,10 +986,16 @@ async function go(page) {
   document.getElementById('topbarActions').innerHTML = '';
   document.getElementById('content').innerHTML = '<div class="loading"><i class="fas fa-circle-notch"></i><span>Cargando…</span></div>';
   await loadAll();
+  renderCurrentPage();
+}
+
+// Re-renderiza la página actualmente visible sin navegar — útil tras importar
+// datos o modificar el DB en vivo.
+function renderCurrentPage() {
   ({ dashboard:renderDash, embarques:renderEmb, calendario:renderCal,
      clientes:()=>renderDir('clientes'), proveedores:()=>renderDir('proveedores'),
      gastosf:renderGastosFijos,
-     config:renderConfig })[page]?.();
+     config:renderConfig })[currentPage]?.();
 }
 
 // ═══════════════ DASHBOARD ═══════════════
@@ -1558,17 +1574,31 @@ async function saveEmbarque() {
 }
 
 // ═══════════════ CALENDARIO ═══════════════
+// Monto 0 = pago/cobro ya realizado. Por defecto se ocultan; el toggle
+// "Mostrar pagados" los vuelve visibles con estilo atenuado y un badge verde.
+// El estado se persiste en localStorage para respetar la preferencia del usuario.
+function toggleCalPagados(checkbox) {
+  localStorage.setItem('lk_cal_mostrar_pagados', checkbox.checked ? '1' : '0');
+  renderCal();
+}
+
 function renderCal() {
+  const mostrarPagados = localStorage.getItem('lk_cal_mostrar_pagados') === '1';
   const todos = [];
   const hoy = new Date(); hoy.setHours(0,0,0,0);
 
   DB.embarques.forEach(e => {
-    if (e.FechaPago1)
-      todos.push({ d:new Date(e.FechaPago1), tipo:'p', emp:e.Proveedor1||'Proveedor', ref:e.Title, refCl:e.RefCliente, amt:+e.MontoPago1||0 });
-    if (e.FechaPago2)
-      todos.push({ d:new Date(e.FechaPago2), tipo:'p', emp:e.Proveedor2||'Proveedor 2', ref:e.Title, refCl:e.RefCliente, amt:+e.MontoPago2||0 });
-    if (e.FechaCobroCliente)
-      todos.push({ d:new Date(e.FechaCobroCliente), tipo:'c', emp:e.Cliente||'Cliente', ref:e.Title, refCl:e.RefCliente, amt:+e.MontoCobroCliente||0 });
+    const mp1 = +e.MontoPago1 || 0;
+    const mp2 = +e.MontoPago2 || 0;
+    const mc  = +e.MontoCobroCliente || 0;
+    // Un evento entra si tiene fecha y (a) el monto es > 0, o (b) el toggle
+    // "mostrar pagados" está activo (entonces también se listan los de monto 0).
+    if (e.FechaPago1 && (mp1 > 0 || mostrarPagados))
+      todos.push({ d:new Date(e.FechaPago1), tipo:'p', emp:e.Proveedor1||'Proveedor', ref:e.Title, refCl:e.RefCliente, amt:mp1, pagado: mp1 === 0 });
+    if (e.FechaPago2 && (mp2 > 0 || mostrarPagados))
+      todos.push({ d:new Date(e.FechaPago2), tipo:'p', emp:e.Proveedor2||'Proveedor 2', ref:e.Title, refCl:e.RefCliente, amt:mp2, pagado: mp2 === 0 });
+    if (e.FechaCobroCliente && (mc > 0 || mostrarPagados))
+      todos.push({ d:new Date(e.FechaCobroCliente), tipo:'c', emp:e.Cliente||'Cliente', ref:e.Title, refCl:e.RefCliente, amt:mc, pagado: mc === 0 });
   });
   todos.sort((a,b)=>a.d-b.d);
 
@@ -1579,34 +1609,46 @@ function renderCal() {
     lastMon = mon;
     const dd  = String(t.d.getDate()).padStart(2,'0');
     const mmm = t.d.toLocaleDateString('es-MX',{month:'short'}).replace('.','');
-    const past = t.d < hoy ? 'cal-vencido' : '';
+    // Clases: pagado tiene prioridad visual sobre vencido
+    const cls = t.pagado ? 'cal-pagado' : (t.d < hoy ? 'cal-vencido' : '');
     const lbl  = t.tipo==='p' ? 'Pago proveedor' : 'Cobro cliente';
     const sign = t.tipo==='p' ? '−' : '+';
-    return sep+`<div class="cal-row ${past}">
+    const badge = t.pagado
+      ? `<span class="cal-badge-pagado"><i class="fas fa-check me-1"></i>${t.tipo==='p'?'PAGADO':'COBRADO'}</span>`
+      : '';
+    return sep+`<div class="cal-row ${cls}">
       <div class="cal-datebox"><div class="cal-day">${dd}</div><div class="cal-mon">${mmm}</div></div>
       <div class="cal-dot dot-${t.tipo}"></div>
       <div class="flex-grow-1">
-        <div class="cal-emp">${t.emp}</div>
+        <div class="cal-emp">${t.emp}${badge}</div>
         <div class="cal-ref">${t.ref}${t.refCl?' · '+t.refCl:''} · <span style="color:${t.tipo==='p'?'var(--red)':'var(--green)'}">${lbl}</span></div>
       </div>
       <div class="cal-imp ${t.tipo}">${sign}${mny(t.amt)}</div>
     </div>`;
   }).join('');
 
-  const totP = todos.filter(t=>t.tipo==='p').reduce((s,t)=>s+t.amt,0);
-  const totC = todos.filter(t=>t.tipo==='c').reduce((s,t)=>s+t.amt,0);
+  // Los totales sólo suman lo PENDIENTE (monto > 0). Los pagados no inflan
+  // el balance aunque estén visibles.
+  const pendientes = todos.filter(t => !t.pagado);
+  const totP = pendientes.filter(t=>t.tipo==='p').reduce((s,t)=>s+t.amt,0);
+  const totC = pendientes.filter(t=>t.tipo==='c').reduce((s,t)=>s+t.amt,0);
   const bal  = totC-totP;
+  const nPagados = todos.length - pendientes.length;
 
   document.getElementById('content').innerHTML = `
     <div class="row g-3 mb-4">
-      <div class="col-auto">${mini('Total Pagos','−'+mny(totP),'var(--red)')}</div>
-      <div class="col-auto">${mini('Total Cobros','+'+mny(totC),'var(--green)')}</div>
+      <div class="col-auto">${mini('Total Pagos pendientes','−'+mny(totP),'var(--red)')}</div>
+      <div class="col-auto">${mini('Total Cobros pendientes','+'+mny(totC),'var(--green)')}</div>
       <div class="col-auto">${mini('Balance Neto',(bal>=0?'+':'')+mny(bal),bal>=0?'var(--green)':'var(--red)')}</div>
     </div>
     <div class="dtable">
-      <div class="dtable-head">
-        <span class="fw-semibold small">Todos los movimientos · orden cronológico</span>
-        <small class="text-muted">${todos.length} entradas</small>
+      <div class="dtable-head" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <span class="fw-semibold small">Movimientos · orden cronológico</span>
+        <small class="text-muted">${pendientes.length} pendiente${pendientes.length===1?'':'s'}${mostrarPagados&&nPagados?` · ${nPagados} pagado${nPagados===1?'':'s'}`:''}</small>
+        <label class="cal-toggle ms-auto">
+          <input type="checkbox" ${mostrarPagados?'checked':''} onchange="toggleCalPagados(this)">
+          <span>Mostrar pagados</span>
+        </label>
       </div>
       ${rows||'<div class="empty"><i class="fas fa-calendar-times d-block"></i>Sin movimientos registrados</div>'}
     </div>`;
@@ -2255,8 +2297,11 @@ async function importarExcel(input) {
       `${embarquesXL.length} embarques · ${cliSet.size} clientes · ${provSet.size} proveedores`);
     document.getElementById('importFooter').style.display = 'flex';
     toast(`${embarquesXL.length} embarques sincronizados correctamente`, 'success');
-    // Recargar datos en memoria para reflejar cambios inmediatamente
+    // Recargar datos en memoria y re-renderizar la página activa
+    // (calendario/dashboard/embarques) para reflejar cambios al instante
+    // sin tener que cambiar de vista.
     await loadAll();
+    renderCurrentPage();
 
   } catch(e) {
     setImportProgress(0, '✗ Error durante la importación', e.message);
