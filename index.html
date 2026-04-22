@@ -1994,10 +1994,8 @@ async function importarExcel(input) {
 
     // raw:true → valores numéricos crudos (no strings formateados); cellDates ya maneja fechas
     const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
-    // Filas de datos desde la fila 3 (índice 2) — se descartan cabeceras
-    const dataRows = rows.slice(2).filter(r => r[0] && String(r[0]).trim() !== '');
 
-    setImportProgress(15, `Procesados ${dataRows.length} embarques del Excel…`);
+    setImportProgress(15, `Procesados ${rows.length - 2} filas del Excel…`);
 
     // ── Lectura por NOMBRE de cabecera (no por índice) ─────────────────────
     // La fila 2 del "Master file" contiene las cabeceras reales. Construimos
@@ -2025,51 +2023,92 @@ async function importarExcel(input) {
     }
     console.log('[ERP Import] Mapa de cabeceras detectado:', hmap);
 
-    const embarquesXL = dataRows
-      .filter(r => {
-        const idIdx = H('id');
-        return idIdx != null && r[idIdx] && String(r[idIdx]).trim() !== '';
-      })
-      .map(r => {
-        const cel = (name) => {
-          const i = H(name);
-          if (i == null) return null;
-          const v = r[i];
-          if (v == null) return null;
-          const s = String(v).trim();
-          return s || null;
-        };
-        const fec = (name) => {
-          const i = H(name);
-          if (i == null) return null;
-          return excelDateToISO(r[i]);
-        };
-        const num = (name) => {
-          const i = H(name);
-          if (i == null) return 0;
-          return parseEUR(r[i]) ?? 0;
-        };
-        return {
-          Title:             cel('id'),
-          Cliente:           cel('cliente'),                  // primera coincidencia = columna B
-          RefCliente:        cel('referencia cliente'),
-          MBL:               cel('mbl'),                      // opcional: null si la columna no existe
-          ETD:               fec('etd'),
-          ETA:               fec('eta'),
-          POL:               cel('pol'),
-          POD:               cel('pod'),
-          Proveedor1:        cel('proveedor origen'),         // columna del resumen (no la de P)
-          Proveedor2:        cel('proveedor destino'),
-          FechaPago1:        fec('fecha pago proveedor origen'),
-          FechaPago2:        fec('fecha pago proveedor destino'),
-          FechaCobroCliente: fec('fecha de pago cliente'),
-          MontoPago1:        num('monto pago proveedor origen'),
-          MontoPago2:        num('monto pago proveedor destino'),
-          MontoCobroCliente: num('monto de pago cliente'),
-          Estado:            'Activo'
-        };
-      })
-      .filter(e => e.Title);
+    // ── Evaluador de fórmulas aritméticas simples ─────────────────────────
+    // Excel sólo cachea el valor de una fórmula al guardar. Si el usuario
+    // escribe =4020*0.85 pero no guarda el archivo, XLSX.js lee .v=undefined
+    // y este código producía un 0. Con este evaluador, si el valor está
+    // vacío pero hay fórmula y es aritmética pura (+ - * / paréntesis y
+    // números), la calculamos en JS. Seguro: sólo acepta dígitos y operadores.
+    const safeExprRe = /^[\d\s.+\-*/()]+$/;
+    let formulaFallbackCount = 0;
+    function evalSimpleFormula(f) {
+      if (f == null) return null;
+      let expr = String(f).trim();
+      if (expr.startsWith('=')) expr = expr.slice(1);
+      if (!safeExprRe.test(expr)) return null;
+      try {
+        // eslint-disable-next-line no-new-func
+        const r = Function('"use strict";return(' + expr + ')')();
+        return (typeof r === 'number' && isFinite(r)) ? r : null;
+      } catch { return null; }
+    }
+    // Devuelve el número de una celda, probando primero el valor cacheado
+    // y, si es nulo, evaluando la fórmula (si es segura).
+    function readCellNumber(sheetRow1based, colIdx) {
+      if (colIdx == null) return { value: 0, source: 'missing' };
+      const addr = XLSX.utils.encode_cell({ r: sheetRow1based - 1, c: colIdx });
+      const cell = ws[addr];
+      if (!cell) return { value: 0, source: 'empty' };
+      // 1) Valor directo (parseEUR maneja "3865 EUR", " 1095 EUR ", etc.)
+      const v = parseEUR(cell.v);
+      if (v != null) return { value: v, source: 'value' };
+      // 2) Fallback: evaluar fórmula simple
+      if (cell.f) {
+        const r = evalSimpleFormula(cell.f);
+        if (r != null) { formulaFallbackCount++; return { value: r, source: 'formula:' + cell.f }; }
+      }
+      return { value: 0, source: 'null' };
+    }
+
+    const embarquesXL = [];
+    for (let i = 2; i < rows.length; i++) {          // i = índice 0-based en rows (2 = sheet row 3)
+      const r = rows[i];
+      if (!r) continue;
+      const idIdx = H('id');
+      if (idIdx == null) break;
+      const idVal = r[idIdx];
+      if (!idVal || String(idVal).trim() === '') continue;
+
+      const sheetRow = i + 1;                        // fila Excel 1-based
+      const cel = (name) => {
+        const j = H(name);
+        if (j == null) return null;
+        const v = r[j];
+        if (v == null) return null;
+        const s = String(v).trim();
+        return s || null;
+      };
+      const fec = (name) => {
+        const j = H(name);
+        if (j == null) return null;
+        return excelDateToISO(r[j]);
+      };
+      const num = (name) => readCellNumber(sheetRow, H(name)).value;
+
+      embarquesXL.push({
+        Title:             cel('id'),
+        Cliente:           cel('cliente'),
+        RefCliente:        cel('referencia cliente'),
+        MBL:               cel('mbl'),
+        ETD:               fec('etd'),
+        ETA:               fec('eta'),
+        POL:               cel('pol'),
+        POD:               cel('pod'),
+        Proveedor1:        cel('proveedor origen'),
+        Proveedor2:        cel('proveedor destino'),
+        FechaPago1:        fec('fecha pago proveedor origen'),
+        FechaPago2:        fec('fecha pago proveedor destino'),
+        FechaCobroCliente: fec('fecha de pago cliente'),
+        MontoPago1:        num('monto pago proveedor origen'),
+        MontoPago2:        num('monto pago proveedor destino'),
+        MontoCobroCliente: num('monto de pago cliente'),
+        Estado:            'Activo'
+      });
+    }
+
+    if (formulaFallbackCount > 0) {
+      console.warn(`[ERP Import] ${formulaFallbackCount} fórmulas evaluadas en JS por falta de valor cacheado. Tip: abre el Excel, pulsa F9 y guarda para cachear los resultados.`);
+    }
 
     // Debug: muestra los primeros 3 embarques leídos para verificar
     console.log('[ERP Import] Primeros embarques leídos (por cabecera):',
